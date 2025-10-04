@@ -5,17 +5,14 @@ import (
 	//"context"
 	//"encoding/json"
 	//"fmt"
+	"encoding/json"
 	"log"
 	"net/http"
-	"os"
-	"os/signal"
-	"regexp"
+
 	//"strconv"
 	//"strings"
-	"sync"
-	"time"
 
-	"github.com/gorilla/websocket"
+	"time"
 )
 
 // StartAPIServer starts the HTTP API server
@@ -26,7 +23,7 @@ func (sa *SignalAnalyzer) StartAPIServer(addr string) {
 	mux.HandleFunc("/history", sa.handleHistory)
 	mux.HandleFunc("/current", sa.handleCurrent)
 	mux.HandleFunc("/ws", sa.handleWebSocket)
-	
+
 	// Serve a simple HTML dashboard
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -233,8 +230,8 @@ func (sa *SignalAnalyzer) StartAPIServer(addr string) {
             // Update card border color based on quality
             card.className = 'card quality-' + status.signal_quality.toLowerCase();
             
-            container.innerHTML = \`
-                <div class="status-item">
+            container.innerHTML = ` + "`" +
+			`<div class="status-item">
                     <span class="status-label">System Mode:</span>
                     <span class="status-value">\${status.system_mode || 'N/A'}</span>
                 </div>
@@ -269,7 +266,7 @@ func (sa *SignalAnalyzer) StartAPIServer(addr string) {
                 <div class="timestamp">
                     Last updated: \${new Date(status.timestamp).toLocaleString()}
                 </div>
-            \`;
+            ` + "`" + `; 
         }
         
         function updateDataUsage(data) {
@@ -288,8 +285,8 @@ func (sa *SignalAnalyzer) StartAPIServer(addr string) {
                 return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
             }
             
-            container.innerHTML = \`
-                <div class="status-item">
+            container.innerHTML = ` + "`" +
+			`<div class="status-item">
                     <span class="status-label">Uplink Rate:</span>
                     <span class="status-value">\${formatBytes(data.uplink_bytes)}/s</span>
                 </div>
@@ -312,7 +309,7 @@ func (sa *SignalAnalyzer) StartAPIServer(addr string) {
                 <div class="timestamp">
                     Last updated: \${new Date(data.timestamp).toLocaleString()}
                 </div>
-            \`;
+            ` + "`" + `;
         }
         
         function getQualityColor(quality) {
@@ -358,7 +355,7 @@ func (sa *SignalAnalyzer) StartAPIServer(addr string) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(html))
 	})
-	
+
 	log.Printf("Starting API server on %s", addr)
 	go func() {
 		if err := http.ListenAndServe(addr, mux); err != nil {
@@ -374,14 +371,14 @@ func (sa *SignalAnalyzer) handleWebSocket(w http.ResponseWriter, r *http.Request
 		log.Printf("WebSocket upgrade failed: %v", err)
 		return
 	}
-	
+
 	// Register client
 	sa.mu.Lock()
 	sa.clients[conn] = true
 	sa.mu.Unlock()
-	
+
 	log.Printf("WebSocket client connected (total: %d)", len(sa.clients))
-	
+
 	// Send current status immediately
 	if status := sa.GetCurrentStatus(); status != nil {
 		conn.WriteJSON(map[string]interface{}{
@@ -391,11 +388,11 @@ func (sa *SignalAnalyzer) handleWebSocket(w http.ResponseWriter, r *http.Request
 	}
 	if dataUsage := sa.GetCurrentDataUsage(); dataUsage != nil {
 		conn.WriteJSON(map[string]interface{}{
-			"type": "data_usage", 
+			"type": "data_usage",
 			"data": dataUsage,
 		})
 	}
-	
+
 	// Handle messages and keep connection alive
 	defer func() {
 		sa.mu.Lock()
@@ -404,7 +401,7 @@ func (sa *SignalAnalyzer) handleWebSocket(w http.ResponseWriter, r *http.Request
 		conn.Close()
 		log.Printf("WebSocket client disconnected (total: %d)", len(sa.clients))
 	}()
-	
+
 	for {
 		_, _, err := conn.ReadMessage()
 		if err != nil {
@@ -420,7 +417,7 @@ func (sa *SignalAnalyzer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "No status data available"}`, http.StatusNotFound)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(status)
 }
@@ -432,7 +429,7 @@ func (sa *SignalAnalyzer) handleDataUsage(w http.ResponseWriter, r *http.Request
 		http.Error(w, `{"error": "No data usage data available"}`, http.StatusNotFound)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(dataUsage)
 }
@@ -448,16 +445,17 @@ func (sa *SignalAnalyzer) handleHistory(w http.ResponseWriter, r *http.Request) 
 func (sa *SignalAnalyzer) handleCurrent(w http.ResponseWriter, r *http.Request) {
 	status := sa.GetCurrentStatus()
 	dataUsage := sa.GetCurrentDataUsage()
-	
+
 	response := map[string]interface{}{
 		"status":     status,
 		"data_usage": dataUsage,
 		"timestamp":  time.Now(),
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
+
 // GetCurrentStatus returns the current modem status
 func (sa *SignalAnalyzer) GetCurrentStatus() *ModemStatus {
 	sa.mu.RLock()
