@@ -59,6 +59,7 @@ func (sa *SignalAnalyzer) MonitorTTYD(ttydURL string) {
 					}
 
 					line := string(message)
+					log.Printf("Line:%s", line)
 					sa.processLine(line, "ttyd")
 				}
 			}
