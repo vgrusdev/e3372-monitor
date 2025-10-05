@@ -84,7 +84,7 @@ func NewSignalAnalyzer(maxHistory int) *SignalAnalyzer {
 func main() {
 	// Configuration
 	apiAddr := ":8080"
-	ttydURL := "ws://10.134.15.1:7681" // Default ttyd URL
+	ttydURL := "ws://10.134.15.1:8080" // Default ttyd URL
 	maxHistory := 1000
 
 	// Create signal analyzer
