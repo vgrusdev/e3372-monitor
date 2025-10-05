@@ -51,9 +51,7 @@ func (sa *SignalAnalyzer) MonitorTTYD(ttydURL string) {
 				log.Printf("Error reading from ttyd: %v, reconnecting...", err)
 				return
 			}
-
-			line := string(message)
-			log.Printf("Line:%s\n", line)
+			log.Printf("Line:%s\n", message)
 
 			// Read messages from ttyd
 			for {
