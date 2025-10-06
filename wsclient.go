@@ -107,13 +107,16 @@ func (w *WebSocketClient) handleMessage(message []byte) {
 	messageStr := string(message)
 	w.logger.Printf("DEBUG: Received message: %s", messageStr)
 
-	// Parse different message types
-	if strings.HasPrefix(messageStr, "^RSSI:") {
-		w.parseRSSI(messageStr)
-	} else if strings.HasPrefix(messageStr, "^HCSQ:") {
-		w.parseHCSQ(messageStr)
-	} else if strings.HasPrefix(messageStr, "^DSFLOWRPT:") {
-		w.parseDSFLOW(messageStr)
+	for _, str := range strings.Fields(messageStr) {
+		//s := strings.TrimSpace(str)
+		// Parse different message types
+		if strings.HasPrefix(str, "^RSSI:") {
+			w.parseRSSI(str)
+		} else if strings.HasPrefix(str, "^HCSQ:") {
+			w.parseHCSQ(str)
+		} else if strings.HasPrefix(str, "^DSFLOWRPT:") {
+			w.parseDSFLOW(str)
+		}
 	}
 }
 
