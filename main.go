@@ -1,10 +1,12 @@
 package main
 
 import (
-	//"bufio"
-	//"context"
+	"context"
+	"syscall"
 	//"encoding/json"
+	"flag"
 	//"fmt"
+	//"html/template"
 	"log"
 	"net/http"
 	"os"
@@ -14,105 +16,158 @@ import (
 	//"strconv"
 	//"strings"
 	"sync"
+	//"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
-// ModemStatus represents the parsed LTE modem status
+// Config holds application configuration
+type Config struct {
+	ModemWSURL     string
+	WebPort        string
+	ReconnectDelay time.Duration
+	RequestTimeout time.Duration
+	PingInterval   time.Duration
+	MaxReconnect   int
+	LogLevel       string
+	BufferSize     int
+}
+
+// ModemStatus holds parsed modem status information
 type ModemStatus struct {
-	Timestamp     time.Time  `json:"timestamp"`
-	SystemMode    string     `json:"system_mode"`
-	RSSI          int        `json:"rssi"`
-	RSSI_dBm      float64    `json:"rssi_dbm"`
-	RSRP          int        `json:"rsrp"`
-	RSRP_dBm      float64    `json:"rsrp_dbm"`
-	SINR          int        `json:"sinr"`
-	SINR_dB       float64    `json:"sinr_db"`
-	RSRQ          int        `json:"rsrq"`
-	RSRQ_dB       float64    `json:"rsrq_db"`
-	SignalQuality string     `json:"signal_quality"`
-	HealthStatus  string     `json:"health_status"`
-	DataUsage     *DataUsage `json:"data_usage,omitempty"`
-	Source        string     `json:"source"` // "stdin" or "ttyd"
+	mu              sync.RWMutex
+	LastUpdate      time.Time        `json:"last_update"`
+	RSSI            int              `json:"rssi"`
+	NetworkType     string           `json:"network_type"`
+	SignalStrength  int              `json:"signal_strength"`
+	SignalQuality   int              `json:"signal_quality"`
+	RSRQ            int              `json:"rsrq"`
+	RSRP            int              `json:"rsrp"`
+	DataFlow        []DataFlowRecord `json:"data_flow"`
+	ConnectionStats ConnectionStats  `json:"connection_stats"`
+	IsConnected     bool             `json:"is_connected"`
 }
 
-// DataUsage represents data flow information from DSFLOWRPT
-type DataUsage struct {
-	Timestamp     time.Time `json:"timestamp"`
-	ReportID      string    `json:"report_id"`
-	UplinkBytes   int64     `json:"uplink_bytes"`
-	DownlinkBytes int64     `json:"downlink_bytes"`
-	TotalUplink   int64     `json:"total_uplink"`
-	TotalDownlink int64     `json:"total_downlink"`
+// DataFlowRecord holds data flow information
+type DataFlowRecord struct {
+	Timestamp time.Time `json:"timestamp"`
+	ReportID  string    `json:"report_id"`
+	ULBytes   int64     `json:"ul_bytes"`
+	DLBytes   int64     `json:"dl_bytes"`
+	ULRate    int64     `json:"ul_rate"`
+	DLRate    int64     `json:"dl_rate"`
+	TotalUL   int64     `json:"total_ul"`
+	TotalDL   int64     `json:"total_dl"`
 }
 
-// SignalAnalyzer analyzes signal quality based on metrics
-type SignalAnalyzer struct {
-	mu               sync.RWMutex
-	currentStatus    *ModemStatus
-	currentDataUsage *DataUsage
-	statusHistory    []ModemStatus
-	dataUsageHistory []DataUsage
-	maxHistory       int
-	clients          map[*websocket.Conn]bool
-	broadcast        chan interface{}
+// ConnectionStats holds connection statistics
+type ConnectionStats struct {
+	TotalReconnects  int64         `json:"total_reconnects"`
+	LastDisconnect   time.Time     `json:"last_disconnect"`
+	Uptime           time.Duration `json:"uptime"`
+	BytesReceived    int64         `json:"bytes_received"`
+	MessagesReceived int64         `json:"messages_received"`
 }
 
+// WebSocketClient manages WebSocket connection
+type WebSocketClient struct {
+	config         *Config
+	modemStatus    *ModemStatus
+	conn           *websocket.Conn
+	shutdown       chan struct{}
+	reconnect      chan struct{}
+	stats          *ConnectionStats
+	logger         *log.Logger
+	reconnectCount int
+}
+
+// Server manages HTTP server and WebSocket client
+type Server struct {
+	config      *Config
+	modemStatus *ModemStatus
+	wsClient    *WebSocketClient
+	mux         *http.ServeMux
+	logger      *log.Logger
+}
+
+// Regular expressions for parsing modem data
 var (
-	upgrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
-	}
-
-	// Regex patterns for parsing modem output
-	rssiRegex   = regexp.MustCompile(`\^RSSI:(\d+)`)
+	rssiRegex   = regexp.MustCompile(`\^RSSI:(-?\d+)`)
 	hcsqRegex   = regexp.MustCompile(`\^HCSQ:"([^"]+)",(\d+),(\d+),(\d+),(\d+)`)
 	dsflowRegex = regexp.MustCompile(`\^DSFLOWRPT:([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+)`)
 )
 
-// NewSignalAnalyzer creates a new signal analyzer
-func NewSignalAnalyzer(maxHistory int) *SignalAnalyzer {
-	return &SignalAnalyzer{
-		statusHistory:    make([]ModemStatus, 0, maxHistory),
-		dataUsageHistory: make([]DataUsage, 0, maxHistory/10),
-		maxHistory:       maxHistory,
-		clients:          make(map[*websocket.Conn]bool),
-		broadcast:        make(chan interface{}, 100),
+func main() {
+	config := parseFlags()
+
+	// Setup logging
+	logger := setupLogger(config.LogLevel)
+
+	// Create modem status
+	modemStatus := &ModemStatus{
+		DataFlow: make([]DataFlowRecord, 0),
 	}
+
+	// Create and start server
+	server := NewServer(config, modemStatus, logger)
+
+	// Setup graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	setupSignalHandler(cancel, logger)
+
+	// Start the server
+	if err := server.Start(ctx); err != nil {
+		logger.Fatalf("Failed to start server: %v", err)
+	}
+
+	logger.Println("Server shutdown complete")
 }
 
-func main() {
-	// Configuration
-	apiAddr := ":8080"
-	ttydURL := "ws://10.134.15.1:8080/ws" // Default ttyd URL
-	maxHistory := 1000
+func parseFlags() *Config {
+	config := &Config{}
 
-	// Create signal analyzer
-	analyzer := NewSignalAnalyzer(maxHistory)
+	flag.StringVar(&config.ModemWSURL, "modem-ws-url", "ws://localhost:8080/modem",
+		"Modem WebSocket URL")
+	flag.StringVar(&config.WebPort, "web-port", "8080",
+		"Web dashboard port")
+	flag.DurationVar(&config.ReconnectDelay, "reconnect-delay", 5*time.Second,
+		"WebSocket reconnect delay")
+	flag.DurationVar(&config.RequestTimeout, "request-timeout", 10*time.Second,
+		"HTTP request timeout")
+	flag.DurationVar(&config.PingInterval, "ping-interval", 30*time.Second,
+		"WebSocket ping interval")
+	flag.IntVar(&config.MaxReconnect, "max-reconnect", 10,
+		"Maximum reconnection attempts (0 = infinite)")
+	flag.StringVar(&config.LogLevel, "log-level", "info",
+		"Log level (debug, info, warn, error)")
+	flag.IntVar(&config.BufferSize, "buffer-size", 100,
+		"WebSocket message buffer size")
 
-	// Start broadcaster
-	go analyzer.RunBroadcaster()
+	flag.Parse()
 
-	// Start API server
-	analyzer.StartAPIServer(apiAddr)
+	return config
+}
 
-	// Start monitoring from both sources
-	go analyzer.MonitorStdin()
-	go analyzer.MonitorTTYD(ttydURL)
+func setupLogger(level string) *log.Logger {
+	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
+	return logger
+}
 
-	log.Println("LTE Modem Monitor started")
-	log.Printf("API available at http://localhost%s", apiAddr)
-	log.Printf("Monitoring ttyd stream at: %s", ttydURL)
-	log.Println("Monitoring stdin stream...")
-	log.Println("Supported formats:")
-	log.Println("  ^RSSI:31")
-	log.Println("  ^HCSQ:\"LTE\",90,80,166,20")
-	log.Println("  ^DSFLOWRPT:00002CB1,00000154,000000EB,00000000125DBB6B,000000000F51DB0A,00000000,00000000")
-
-	// Wait for interrupt signal
+func setupSignalHandler(cancel context.CancelFunc, logger *log.Logger) {
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
-	<-sigChan
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	log.Println("Shutting down...")
+	go func() {
+		sig := <-sigChan
+		logger.Printf("Received signal: %v. Shutting down gracefully...", sig)
+		cancel()
+
+		// Force exit after timeout
+		time.Sleep(10 * time.Second)
+		logger.Println("Forcing shutdown due to timeout")
+		os.Exit(1)
+	}()
 }
