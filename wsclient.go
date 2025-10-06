@@ -92,7 +92,7 @@ func (w *WebSocketClient) connectAndListen(ctx context.Context) error {
 				w.handleDisconnect()
 				return fmt.Errorf("WebSocket read error: %v", err)
 			}
-
+			//log.Printf("message: %s", message)
 			if messageType == websocket.TextMessage {
 				w.handleMessage(message)
 			}
@@ -118,6 +118,7 @@ func (w *WebSocketClient) handleMessage(message []byte) {
 }
 
 func (w *WebSocketClient) parseRSSI(data string) {
+	w.logger.Printf("DEBUG.parseRSSI string:%s", data)
 	matches := rssiRegex.FindStringSubmatch(data)
 	if len(matches) == 2 {
 		rssi, err := strconv.Atoi(matches[1])
